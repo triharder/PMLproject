@@ -1,0 +1,136 @@
+---
+title: "Practical Machine Learning Course Project"
+subtitle: predmachlearn-034
+author: "triharder"
+date: "November 22, 2015"
+fontsize: 11pt
+abstract: 
+output: html_document
+---
+
+# Background
+
+Using devices such as _Jawbone Up_, _Nike FuelBand_, and _Fitbit_ it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how _much_ of a particular activity they do, but they rarely quantify _how well they do it_. This project focuses on the data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website [here] (http://groupware.les.inf.puc-rio.br/har)  Data was extracted from the _Weight Lifting Exercise Dataset_.
+
+# Objective
+
+Build a model / Train an algorithm to predict the manner in which the participants did the exercise in the respective testing cases. The `classe` variable in the training set represents the manner of exercise.  
+
+# The Data
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions:  
+  - Class A - exactly according to the specification  
+  - Class B - throwing the elbows to the front  
+  - Class C - lifting the dumbbell only halfway  
+  - Class D - lowering the dumbbell only halfway  
+  - Class E - throwing the hips to the front  
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience.  
+
+```{r setup, echo=FALSE, warning=FALSE, message=FALSE}
+#setwd("~/Desktop/JHU/PML/#Course Project")
+library(doSNOW)
+library(AppliedPredictiveModeling)
+library(caret)
+library(randomForest)
+library(rpart)
+library(rattle)
+#Configure system for parallel processing (Windows)
+threadCount <-4 # 4 on laptop, 8 on PC
+cluster<-makeCluster(threadCount) #<- # of processors / hyperthreads on machine
+registerDoSNOW(cluster)
+
+set.seed(31980)
+```
+
+# Building a Model  
+## Get, load, and partition data  
+Because the data has approximately 20,000 observations, we consider this a large sample and will therefore take advantage of the opportunity to partition the data into training, testing and validation sets.  Using the recommendations for designing a prediction study, these sets will divide the original _training.csv_.  The model data is placed in a data frame, **`modData`**.  All NA, mathematial errors, and blank observations are considered NA values for further analysis. 
+```{r get, echo=FALSE, warning=FALSE, message=FALSE, cache=TRUE}
+if(!file.exists("./training.csv")){download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",destfile = "training.csv")}
+if(!file.exists("./testing.csv")){download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",destfile = "testing.csv")}
+rawData <- read.csv("training.csv", na.strings = c('NA','#DIV/0!',''))
+testCases <- read.csv("testing.csv", na.strings = c('NA','#DIV/0!',''))
+#classe <- unique(training$classe)
+```  
+## Explore data  
+The primary objective in exploring this data is to determine which variables to preserve for the final predictive model.  Reviewing the variables summarized in `rawSumm` allows observation of which are discrete or continuous, have NAs or other invalid values, and the class of each variable which will lead us to cleaning the data to best serve our prediction model.  
+```{r explore, warning=FALSE, message=FALSE, cache=TRUE}
+# Consider names, str, head, summary
+#names(rawData)
+rawSumm <- sapply(rawData,summary)
+rawSumm
+#Find columns with primarily NA values for omission
+trainNA <- which(sapply(rawData,function(x) {mean(is.na(x))}) > .95)
+testNA <- which(sapply(testCases,function(x) {mean(is.na(x))}) > .95)
+#Find columns with near zero values
+nearZero <- nearZeroVar(rawData,saveMetrics=TRUE)
+#Set index for prediction-irrelevant variables
+trainRem <- unique(c(1,3:7,trainNA))
+testRem <- unique(c(1,3:7,testNA))
+all.equal(trainRem,testRem)
+```  
+## Clean data
+Using indexes created for NA-predominant and prediction-irrelevant variables, a model data frame is created to proceed with training and fitting predictive model.   
+```{r clean, echo=FALSE, warning=FALSE, message=FALSE}
+#Remove irrelevant values for analysis
+modData <- rawData[,-trainRem]
+testData <- testCases[,-testRem]
+```  
+Since the model will predict the manner of exercise for each test case, we identify the factors defined by each manner of exercise, or the `classe` variable.  Using this variable, we partition the training data file into testing and training subsets at the recommendated ratio of 60% 40%, respectively.
+```{r partition, warning=FALSE, message=FALSE}
+modIndex <- createDataPartition(modData$classe, p = 0.60,list=FALSE)
+training <- modData[modIndex,]
+crossVal <- modData[-modIndex,]
+```  
+
+## The Model
+The `randomForest` method is chosen as a starting point for its reputation to produce a high accuracy model.
+```{r rf-build, warning=FALSE, message=FALSE, cache=TRUE}
+rforMod <‐ randomForest(classe ~ ., data=training)
+rforPred <- predict(rforMod, crossVal,type="class")
+rf.cm <- confusionMatrix(rforPred, crossVal$classe)
+rf.cm
+rfAcc <- round(rf.cm$overall['Accuracy']*100,2)
+```  
+For completeness, an `rpart` model is also constructed for comparison.
+```{r rpart-build, warning=FALSE, message=FALSE, cache=TRUE, fig.height=8, fig.width=10}
+rpartMod <‐ rpart(classe ~ ., data=training, method="class")
+fancyRpartPlot(rpartMod, main = NULL, sub = NULL)
+rpartPred <- predict(rpartMod, crossVal,type="class")
+rp.cm <- confusionMatrix(rpartPred, crossVal$classe)
+rp.cm
+rpAcc <- round(rp.cm$overall['Accuracy']*100,2)
+```  
+
+### Using Cross-Validation
+A cross validation set was utilized with 40% of the original training data.  The accuracy of the `randomForest` model applied to the cross-validation set is __*`r rfAcc`%*__.  The accuracy of the `rpart` model was *`r rpAcc`%* comparably.  All further discussion will reference the `randomForest` due to its favorable accuracy.
+
+### Expected Out-of-Sample Error
+Based on the accuracty of the random forest model which was used for prediction on the test cases, we  can expect the out-of-sample error to be __*`r 100-rfAcc`%*__, or `1 - accuracy`.  
+
+# Prediction Summary  
+In closing, the random forest model yielded a highly accurate model and was applied to the test cases provided and was a clear choice over the rpart model which was only somewhat accurate.
+```{r predictions}
+rfPred <- predict(rforMod, testData,type="class")
+rpPred <- predict(rpartMod, testData,type="class")
+preds <- data.frame(cbind("Case"=testCases$problem_id,"rfClasse"=as.character(rfPred),"rpClasse"=as.character(rpPred)))
+```  
+Having verified test case predictions are correct after submission, a summary of the test case results follow with indication where the rpart model would have failed:  
+```{r summary, echo=FALSE}
+summTable <- cbind(preds, "Match"=ifelse(preds$rfClasse == preds$rpClasse,"Yes","RF Superior"))
+summTable
+```  
+It can be noted that there are *`r sum(summTable$Match=="RF Superior")`* cases where the `randomForest` model is superior to the rpart model.  In our 20 cases we achieved __*100%*__ accuracy with the `randomForest` model while only *`r 100-(5*sum(summTable$Match=="RF Superior"))`%* of the cases were accurate with the `rpart` predictions.  
+
+```{r output, echo=FALSE}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+answers = rfPred
+pml_write_files(answers)
+```  
